@@ -87,13 +87,17 @@ GEMINI_API_KEY=여기에_본인_키
 
 ## Docker 이미지 (`app/` 폴더에서)
 
+개발 서버는 x86(m7i-flex.large)이라 기본 빌드를 씁니다. Apple Silicon Mac처럼 ARM 컴퓨터에서 빌드할 때만 `docker buildx build --platform linux/amd64`로 바꿉니다.
+
 ```bash
-docker buildx build --platform linux/arm64 -t llm-tollgate-gateway .
+docker build -t llm-tollgate-gateway .
 ```
 
 ```bash
-docker buildx build --platform linux/arm64 --build-arg MODULE=fake-llm -t llm-tollgate-fake-llm .
+docker build --build-arg MODULE=fake-llm -t llm-tollgate-fake-llm .
 ```
+
+쿠버네티스에 올릴 때는 컨테이너 `resources.limits.memory`를 꼭 지정합니다. JVM이 그 한도의 75%를 힙으로 쓰기 때문에, 한도가 없으면 서버 전체 메모리(8GB)를 기준으로 잡습니다.
 
 ## 아직 없는 것 (일정표 기준)
 

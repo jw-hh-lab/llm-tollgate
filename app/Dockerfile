@@ -1,7 +1,7 @@
 # 게이트웨이와 가짜 LLM 서버를 같은 Dockerfile로 만든다.
 #   docker build -t llm-tollgate-gateway .
 #   docker build --build-arg MODULE=fake-llm -t llm-tollgate-fake-llm .
-# eclipse-temurin 이미지는 ARM(t4g)과 x86 모두 지원한다. ARM용 빌드는 docker buildx --platform linux/arm64
+# 개발 서버는 x86(m7i-flex.large). ARM 컴퓨터(Apple Silicon 등)에서 빌드할 때는 docker buildx build --platform linux/amd64
 
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /src
