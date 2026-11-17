@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.llmtollgate.gateway.config.GatewayProperties;
 import com.llmtollgate.gateway.credit.Pricing;
 import com.llmtollgate.gateway.support.StubGeminiServer;
 
@@ -52,6 +53,8 @@ class ChatApiTest {
     ObjectMapper mapper;
     @Autowired
     Pricing pricing;
+    @Autowired
+    GatewayProperties properties;
     @Autowired
     JdbcClient jdbc;
 
@@ -86,9 +89,9 @@ class ChatApiTest {
                 .andReturn().getResponse().getContentAsString();
 
         JsonNode res = mapper.readTree(json);
-        long expectedCost = pricing.cost("gemini-2.5-flash", 10, 6);
+        long expectedCost = pricing.cost(properties.llm().primaryModel(), 10, 6);
         assertThat(res.path("content").asText()).isEqualTo("안녕하세요");
-        assertThat(res.at("/gateway/model_used").asText()).isEqualTo("gemini-2.5-flash");
+        assertThat(res.at("/gateway/model_used").asText()).isEqualTo(properties.llm().primaryModel());
         assertThat(res.at("/gateway/tokens/output").asLong()).isEqualTo(6);
         assertThat(res.at("/gateway/credits_charged").asLong()).isEqualTo(expectedCost);
         assertThat(res.at("/gateway/credits_remaining").asLong()).isEqualTo(100_000 - expectedCost);
