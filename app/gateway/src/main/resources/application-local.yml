@@ -1,5 +1,8 @@
 # 노트북에서 MySQL·Docker 없이 바로 띄우는 설정. 실행: ./gradlew :gateway:bootRun --args='--spring.profiles.active=local'
+# 실제 Gemini를 부르려면 app/gateway/.env 파일에 GEMINI_BASE_URL, GEMINI_API_KEY를 적는다 (.env는 깃에 올라가지 않음)
 spring:
+  config:
+    import: optional:file:./.env[.properties]
   datasource:
     url: jdbc:h2:file:./build/localdb/tollgate;MODE=MySQL;DATABASE_TO_LOWER=TRUE;NON_KEYWORDS=VALUE
     username: sa
@@ -9,5 +12,5 @@ tollgate:
   admin-token: local-admin
   llm:
     gemini:
-      base-url: http://localhost:9090   # fake-llm 모듈
-      api-key: fake
+      base-url: ${GEMINI_BASE_URL:http://localhost:9090}   # 기본은 fake-llm 모듈
+      api-key: ${GEMINI_API_KEY:fake}

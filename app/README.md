@@ -32,6 +32,19 @@ curl -X POST localhost:8080/v1/chat/completions -H "Authorization: Bearer gw_발
 
 테스트: `./gradlew test` (H2와 테스트용 가짜 서버로 돌아서 외부 의존성이 없습니다)
 
+### 로컬에서 실제 Gemini 부르기
+
+`app/gateway/.env` 파일을 만들고 아래 두 줄을 적은 뒤 게이트웨이를 다시 띄웁니다. 이 파일이 없으면 가짜 LLM 서버(9090)를 씁니다.
+
+```properties
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+GEMINI_API_KEY=여기에_본인_키
+```
+
+- `.env`는 저장소 `.gitignore`에 들어 있어 깃에 올라가지 않습니다. 커밋 전에 `git status`에 `.env`가 보이지 않는지 한 번 더 확인합니다.
+- 키는 이 파일 말고 코드, `application*.yml`, 노션, 채팅 어디에도 적지 않습니다.
+- 배포 서버의 키는 SSM Parameter Store에 넣고 `GEMINI_API_KEY` 환경 변수로 주입합니다(종완).
+
 ## API 요약
 
 | 메서드 | 경로 | 인증 | 설명 |
