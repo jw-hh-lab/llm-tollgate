@@ -1,0 +1,17 @@
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-mysql'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
+
+    runtimeOnly 'com.mysql:mysql-connector-j'
+
+    // 로컬 실행(local 프로필)과 테스트에서만 쓰는 메모리 DB. 운영 이미지에는 들어가지 않는다
+    developmentOnly 'com.h2database:h2'
+    testRuntimeOnly 'com.h2database:h2'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}

@@ -1,0 +1,5 @@
+# k3s 배포용. SPRING_PROFILES_ACTIVE=prod
+logging:
+  structured:
+    format:
+      console: ecs   # JSON 한 줄 로그. requestId, customerId, model은 MDC로 함께 찍힌다
