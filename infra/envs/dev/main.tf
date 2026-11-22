@@ -25,3 +25,9 @@ module "cdn" {
   name          = local.name
   origin_domain = module.compute.public_dns
 }
+
+module "github_actions" {
+  source      = "../../modules/github-actions"
+  name        = local.name
+  instance_id = module.compute.instance_id
+}
