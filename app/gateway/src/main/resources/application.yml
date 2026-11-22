@@ -18,6 +18,12 @@ spring:
     password: ${DB_PASSWORD:}
   flyway:
     enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 500ms          # Redis가 느리거나 죽어도 요청이 오래 막히지 않게 (사용량 제한·캐시는 건너뛰고 진행)
+      connect-timeout: 500ms
 
 management:
   server:
@@ -32,10 +38,17 @@ management:
         enabled: true    # /actuator/health/liveness, /actuator/health/readiness
       group:
         readiness:
-          include: readinessState,db   # LLM은 헬스체크에서 뺀다 (외부 장애로 Pod가 재시작되면 안 됨)
+          include: readinessState,db   # LLM·Redis는 뺀다 (부가 기능 장애로 Pod가 빠지면 안 됨)
 
 tollgate:
   admin-token: ${ADMIN_TOKEN:}
+  redis:
+    enabled: ${TOLLGATE_REDIS_ENABLED:true}   # false면 사용량 제한·캐시 없이 동작 (로컬·테스트)
+    rate-limit:
+      per-minute: ${RATE_LIMIT_PER_MINUTE:60}  # 고객별 분당 호출 수 (IP 단위 제한은 Nginx)
+      per-day: ${RATE_LIMIT_PER_DAY:5000}      # 고객별 하루 호출 수 (UTC 날짜 기준)
+    cache:
+      ttl: 24h                                 # 11/9 회의 추천: 같은 질문은 하루 동안 같은 답
   llm:
     # gemini-2.5-flash는 새 사용자에게 막혀 있다(2026-11-17 확인, Google이 3.8-flash 사용을 안내)
     primary-model: ${LLM_PRIMARY_MODEL:gemini-3.8-flash}

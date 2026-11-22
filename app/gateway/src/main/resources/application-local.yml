@@ -9,6 +9,8 @@ spring:
     password:
 
 tollgate:
+  redis:
+    enabled: false   # Redis 없이. Redis 기능 테스트는 RedisFeaturesTest에서 켠다
   admin-token: local-admin
   llm:
     gemini:
