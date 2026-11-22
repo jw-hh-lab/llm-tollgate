@@ -30,7 +30,10 @@ curl -X POST localhost:8080/admin/customers -H 'X-Admin-Token: local-admin' -H '
 curl -X POST localhost:8080/v1/chat/completions -H "Authorization: Bearer gw_발급받은키" -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"hello"}],"max_tokens":200}'
 ```
 
-테스트: `./gradlew test` (H2와 테스트용 가짜 서버로 돌아서 외부 의존성이 없습니다)
+테스트: `./gradlew test` (H2와 테스트용 가짜 서버로 돕니다)
+
+- `CreditConcurrencyMySqlTest`는 Docker로 실제 MySQL 8.4를 띄워 동시 요청 100~300개를 검증합니다. Docker가 없으면 이 테스트만 건너뜁니다. 측정 결과는 `gateway/build/reports/concurrency/mysql-credit.md`, 정리본은 `docs/results/`에 있습니다.
+- "건너뜀(skipped)"도 실패처럼 확인하세요. Docker는 켜져 있는데 건너뛰었다면 Testcontainers와 Docker 버전이 안 맞는 것입니다.
 
 ### 로컬에서 실제 Gemini 부르기
 
