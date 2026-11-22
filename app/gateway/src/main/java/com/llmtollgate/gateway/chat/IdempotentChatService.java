@@ -18,11 +18,14 @@ import com.llmtollgate.gateway.idempotency.IdempotencyService;
 public class IdempotentChatService {
 
     private final ChatService chatService;
+    private final StreamingChatService streamingService;
     private final IdempotencyService idempotency;
     private final ObjectMapper mapper;
 
-    public IdempotentChatService(ChatService chatService, IdempotencyService idempotency, ObjectMapper mapper) {
+    public IdempotentChatService(ChatService chatService, StreamingChatService streamingService,
+                                 IdempotencyService idempotency, ObjectMapper mapper) {
         this.chatService = chatService;
+        this.streamingService = streamingService;
         this.idempotency = idempotency;
         this.mapper = mapper;
     }
@@ -54,6 +57,39 @@ public class IdempotentChatService {
         }
         idempotency.complete(customerId, idempotencyKey, toJson(response));
         return new Result(response, null);
+    }
+
+    /** 스트리밍: 새로 처리하면 session, 이미 끝난 키면 저장된 응답(JSON, 한 번에)을 replayedJson으로 */
+    public record StreamResult(StreamingChatService.StreamSession session, String replayedJson) {
+    }
+
+    public StreamResult startStream(long customerId, String requestId, String idempotencyKey,
+                                    ChatCompletionRequest request) {
+        if (idempotencyKey != null) {
+            IdempotencyService.Outcome outcome =
+                    idempotency.begin(customerId, idempotencyKey, hash(request), requestId);
+            if (outcome instanceof IdempotencyService.Replay replay) {
+                return new StreamResult(null, replay.responseBody());
+            }
+        }
+        Runnable release = () -> {
+            if (idempotencyKey != null) {
+                idempotency.release(customerId, idempotencyKey);
+            }
+        };
+        try {
+            StreamingChatService.StreamSession session = streamingService.start(customerId, requestId, request,
+                    response -> {
+                        if (idempotencyKey != null) {
+                            idempotency.complete(customerId, idempotencyKey, toJson(response));
+                        }
+                    },
+                    release); // 중간 실패·고객 이탈이면 키를 풀어 같은 키로 다시 시도할 수 있게
+            return new StreamResult(session, null);
+        } catch (RuntimeException e) {
+            release.run();
+            throw e;
+        }
     }
 
     private String hash(ChatCompletionRequest request) {

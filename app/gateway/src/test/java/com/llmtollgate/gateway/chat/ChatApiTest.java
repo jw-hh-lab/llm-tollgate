@@ -135,17 +135,6 @@ class ChatApiTest {
     }
 
     @Test
-    void 스트리밍_요청은_아직_501() throws Exception {
-        Customer c = createCustomer(100_000);
-
-        mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"stream\":true}"))
-                .andExpect(status().isNotImplemented())
-                .andExpect(jsonPath("$.error.code").value("stream_not_supported_yet"));
-    }
-
-    @Test
     void 잘못된_역할이면_400() throws Exception {
         Customer c = createCustomer(100_000);
 

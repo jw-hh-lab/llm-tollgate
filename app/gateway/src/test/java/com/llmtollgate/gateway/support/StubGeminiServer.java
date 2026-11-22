@@ -113,6 +113,23 @@ public final class StubGeminiServer implements AutoCloseable {
         };
     }
 
+    /** n개 조각을 delayMillis 간격으로 보낸다 (고객 이탈 재현용). 마지막에 사용량 포함 */
+    public static Behavior slowChunks(int n, long delayMillis) {
+        return (exchange, body) -> {
+            startSse(exchange);
+            OutputStream out = exchange.getResponseBody();
+            for (int i = 1; i <= n; i++) {
+                String usage = i == n
+                        ? ",\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":" + (n * 2) + "}"
+                        : "";
+                String finish = i == n ? ",\"finishReason\":\"STOP\"" : "";
+                send(out, "{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"조각" + i
+                        + " \"}]}" + finish + "}]" + usage + "}");
+                Thread.sleep(delayMillis);
+            }
+        };
+    }
+
     public static Behavior withoutUsage() {
         return (exchange, body) -> {
             startSse(exchange);

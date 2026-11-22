@@ -52,7 +52,7 @@ GEMINI_API_KEY=여기에_본인_키
 
 | 메서드 | 경로 | 인증 | 설명 |
 | --- | --- | --- | --- |
-| POST | `/v1/chat/completions` | `Authorization: Bearer gw_...` | LLM 호출. 현재는 한 번에 받기만 지원 (`stream: true`는 501). `Idempotency-Key` 헤더를 보내면 같은 키는 한 번만 처리·차감하고, 다시 보내면 저장된 응답을 `Idempotent-Replayed: true` 헤더와 함께 돌려줌 (24시간 보관) |
+| POST | `/v1/chat/completions` | `Authorization: Bearer gw_...` | LLM 호출. `stream: true`면 SSE 스트리밍(`data: {"delta"}` 조각 → `data: {"done": true, 사용량·차감액}`, 도중 실패는 `event: error`), 아니면 한 번에 받기. `Idempotency-Key` 헤더를 보내면 같은 키는 한 번만 처리·차감하고, 다시 보내면 저장된 응답을 `Idempotent-Replayed: true` 헤더와 함께 돌려줌 (24시간 보관) |
 | GET | `/v1/credits` | API 키 | 잔액 조회 |
 | POST | `/admin/customers` | `X-Admin-Token` | 고객 생성 + API 키 발급 (키 원문은 이 응답에서만 보임) |
 | POST | `/admin/customers/{id}/api-keys` | `X-Admin-Token` | API 키 추가 발급 |
@@ -65,8 +65,8 @@ GEMINI_API_KEY=여기에_본인_키
 | 키 없음·잘못됨 | 401 | `invalid_api_key` |
 | 크레딧 부족 | 402 | `insufficient_credits` |
 | 요청 형식 오류 | 400 | `invalid_request` |
-| LLM 실패 (예약액 전액 환불) | 503 | `all_models_unavailable` |
-| 스트리밍 요청 (4~5주차 예정) | 501 | `stream_not_supported_yet` |
+| LLM 실패 (예약액 전액 환불). 스트리밍도 첫 글자 전 실패는 이 응답 | 503 | `all_models_unavailable` |
+| 스트리밍 도중 LLM이 멈추거나 실패 (전액 환불) | 200 + `event: error` | `upstream_stalled`, `upstream_failed` |
 | 같은 `Idempotency-Key` 요청이 아직 처리 중 | 409 | `idempotency_in_progress` (잠시 후 같은 키로 다시 보내면 결과를 받음) |
 | 같은 `Idempotency-Key`로 다른 내용을 보냄 | 422 | `idempotency_key_reused` |
 
