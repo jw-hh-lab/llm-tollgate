@@ -79,7 +79,7 @@ GEMINI_API_KEY=여기에_본인_키
 | `ADMIN_TOKEN` | 예 | (비어 있으면 관리자 API 전부 막힘) | 관리자 API 토큰 |
 | `GEMINI_API_KEY` | 예 | | Gemini 키 |
 | `GEMINI_BASE_URL` | | `https://generativelanguage.googleapis.com` | **가짜 LLM 스위치**: `http://fake-llm:9090`으로 바꾸면 비용 0 |
-| `LLM_PRIMARY_MODEL` | | `gemini-2.5-flash` | 1순위 모델 |
+| `LLM_PRIMARY_MODEL` | | `gemini-3.1-flash-lite` | 1순위 모델. 단가표(`tollgate.pricing`)에 있는 모델만 쓸 수 있음 |
 | `LLM_FIRST_TOKEN_TIMEOUT` | | `10s` | 첫 토큰 대기 |
 | `LLM_IDLE_TIMEOUT` | | `15s` | 조각 사이 대기 |
 

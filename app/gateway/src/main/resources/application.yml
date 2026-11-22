@@ -37,8 +37,9 @@ management:
 tollgate:
   admin-token: ${ADMIN_TOKEN:}
   llm:
-    # gemini-2.5-flash는 새 사용자에게 막혀 있다(2026-11-17 확인, Google이 3.8-flash 사용을 안내)
-    primary-model: ${LLM_PRIMARY_MODEL:gemini-3.8-flash}
+    # 1순위 모델: gemini-3.1-flash-lite (2026-11-20 확정, 종완 동의)
+    # 3.8-flash는 11/17 혼잡으로 무응답이었고 2027-01-01부터 단가가 두 배. 품질이 부족하면 이 값만 바꾼다
+    primary-model: ${LLM_PRIMARY_MODEL:gemini-3.1-flash-lite}
     connect-timeout: 5s
     first-token-timeout: ${LLM_FIRST_TOKEN_TIMEOUT:10s}
     idle-timeout: ${LLM_IDLE_TIMEOUT:15s}
@@ -50,14 +51,15 @@ tollgate:
       api-key: ${GEMINI_API_KEY:}
       thinking-budget: 0   # 생각(thinking) 토큰을 끄면 첫 토큰이 빨라지고 비용이 줄어든다
   pricing:
-    # 1크레딧 = $0.0001 가정(미정). 100만 토큰당 크레딧
+    # 1크레딧 = $0.0001 (2026-11-20 확정). 단위: 100만 토큰당 크레딧, 원가 그대로(마진 없음)
+    # 출처: Google AI Studio 가격표(유료 등급 표준가, 출력에는 생각 토큰 포함), 2026-11-20 확인
     models:
-      "[gemini-3.8-flash]":     # 단가 미확인. 2.5-flash 값을 임시로 씀 → Google 가격표 확인 후 수정
-        input-per-million: 3000
-        output-per-million: 25000
-      "[gemini-2.5-flash]":
-        input-per-million: 3000
-        output-per-million: 25000
-      "[nova-micro]":
+      "[gemini-3.1-flash-lite]":   # $0.25 / $1.50
+        input-per-million: 2500
+        output-per-million: 15000
+      "[gemini-3.8-flash]":        # $0.75 / $3.75 (2026-12-31까지). 2027-01-01부터 $1.50 / $7.50 → 15000 / 75000으로 바꿀 것
+        input-per-million: 7500
+        output-per-million: 37500
+      "[nova-micro]":              # 예비 모델(7~8주차). $0.035 / $0.14 기준, AWS 가격표로 다시 확인할 것
         input-per-million: 350
         output-per-million: 1400
