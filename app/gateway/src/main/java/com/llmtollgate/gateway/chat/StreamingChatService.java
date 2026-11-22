@@ -83,7 +83,13 @@ public class StreamingChatService {
      */
     public StreamSession start(long customerId, String requestId, ChatCompletionRequest request,
                                Consumer<ChatCompletionResponse> onSuccess, Runnable onFailure) {
-        ChatService.Prepared p = chatService.prepare(customerId, requestId, request);
+        ChatService.Plan plan = chatService.plan(customerId, requestId, request);
+        var hit = chatService.cached(plan);
+        if (hit.isPresent()) {
+            // 캐시 적중: LLM 없이 저장된 답을 조각 하나로 보낸다 (차감 0)
+            return new StreamSession(chatService.cacheHit(plan, hit.get()), onSuccess);
+        }
+        ChatService.Prepared p = chatService.reserve(plan);
         BlockingQueue<Event> queue = new LinkedBlockingQueue<>();
         AtomicBoolean cancelled = new AtomicBoolean();
 
@@ -137,6 +143,19 @@ public class StreamingChatService {
         private final Consumer<ChatCompletionResponse> onSuccess;
         private final Runnable onFailure;
         private final long firstTokenMs;
+        private final ChatCompletionResponse cachedResponse;
+
+        /** 캐시 적중용 */
+        private StreamSession(ChatCompletionResponse cachedResponse, Consumer<ChatCompletionResponse> onSuccess) {
+            this.p = null;
+            this.queue = null;
+            this.cancelled = null;
+            this.first = null;
+            this.onSuccess = onSuccess;
+            this.onFailure = () -> { };
+            this.firstTokenMs = 0;
+            this.cachedResponse = cachedResponse;
+        }
 
         private StreamSession(ChatService.Prepared p, BlockingQueue<Event> queue, AtomicBoolean cancelled,
                               Event first, Consumer<ChatCompletionResponse> onSuccess, Runnable onFailure) {
@@ -147,9 +166,14 @@ public class StreamingChatService {
             this.onSuccess = onSuccess;
             this.onFailure = onFailure;
             this.firstTokenMs = p.elapsedMs();
+            this.cachedResponse = null;
         }
 
         public void writeTo(OutputStream out) {
+            if (cachedResponse != null) {
+                writeCached(out);
+                return;
+            }
             StringBuilder content = new StringBuilder();
             long sentChars = 0;
             boolean finished = false; // 정산·환불을 이미 했는지 (두 번 하지 않게)
@@ -163,10 +187,11 @@ public class StreamingChatService {
                     } else if (event instanceof Done d) {
                         ChatService.Settled s = chatService.settleSuccess(p, d.result());
                         finished = true;
+                        chatService.remember(p, content.toString(), d.result());
                         ChatCompletionResponse.Gateway info = ChatService.gatewayInfo(p, d.result(), s);
                         onSuccess.accept(new ChatCompletionResponse(p.requestId(), content.toString(), info));
                         write(out, null, new DoneEvent(true, p.requestId(), info.modelUsed(), info.tokens(),
-                                info.creditsCharged(), info.creditsRemaining(), info.finishReason()));
+                                info.creditsCharged(), info.creditsRemaining(), info.finishReason(), false));
                         return;
                     } else if (event instanceof Failed f) {
                         ChatService.Settled s = chatService.refundFailure(p, f.error());
@@ -192,6 +217,18 @@ public class StreamingChatService {
                     chatService.settlePartial(p, sentChars, firstTokenMs);
                     onFailure.run();
                 }
+            }
+        }
+
+        private void writeCached(OutputStream out) {
+            ChatCompletionResponse.Gateway info = cachedResponse.gateway();
+            onSuccess.accept(cachedResponse);
+            try {
+                write(out, null, new DeltaEvent(cachedResponse.content()));
+                write(out, null, new DoneEvent(true, cachedResponse.id(), info.modelUsed(), info.tokens(),
+                        0, info.creditsRemaining(), info.finishReason(), true));
+            } catch (IOException clientGone) {
+                // 차감이 없으므로 정리할 것도 없다
             }
         }
 
@@ -230,7 +267,7 @@ public class StreamingChatService {
     }
 
     record DoneEvent(boolean done, String id, String modelUsed, ChatCompletionResponse.Tokens tokens,
-                     long creditsCharged, long creditsRemaining, String finishReason) {
+                     long creditsCharged, long creditsRemaining, String finishReason, boolean cacheHit) {
     }
 
     record ErrorEvent(String code, String message, long creditsCharged, long creditsRemaining) {

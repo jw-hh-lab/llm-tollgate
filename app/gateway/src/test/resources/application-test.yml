@@ -9,6 +9,8 @@ management:
     port: 0
 
 tollgate:
+  redis:
+    enabled: false   # Redis 없이. Redis 기능 테스트는 RedisFeaturesTest에서 켠다
   admin-token: test-admin
   llm:
     first-token-timeout: 1s

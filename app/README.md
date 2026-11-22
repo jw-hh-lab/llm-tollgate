@@ -64,6 +64,7 @@ GEMINI_API_KEY=여기에_본인_키
 | --- | --- | --- |
 | 키 없음·잘못됨 | 401 | `invalid_api_key` |
 | 크레딧 부족 | 402 | `insufficient_credits` |
+| 고객별 분당·하루 호출 한도 초과 (`Retry-After` 헤더에 기다릴 초) | 429 | `rate_limited` |
 | 요청 형식 오류 | 400 | `invalid_request` |
 | LLM 실패 (예약액 전액 환불). 스트리밍도 첫 글자 전 실패는 이 응답 | 503 | `all_models_unavailable` |
 | 스트리밍 도중 LLM이 멈추거나 실패 (전액 환불) | 200 + `event: error` | `upstream_stalled`, `upstream_failed` |
@@ -84,6 +85,9 @@ GEMINI_API_KEY=여기에_본인_키
 | `LLM_PRIMARY_MODEL` | | `gemini-3.1-flash-lite` | 1순위 모델. 단가표(`tollgate.pricing`)에 있는 모델만 쓸 수 있음 |
 | `LLM_FIRST_TOKEN_TIMEOUT` | | `10s` | 첫 토큰 대기 |
 | `LLM_IDLE_TIMEOUT` | | `15s` | 조각 사이 대기 |
+| `REDIS_HOST` / `REDIS_PORT` | | `localhost` / `6379` | 클러스터 안에서는 `redis` / `6379` |
+| `TOLLGATE_REDIS_ENABLED` | | `true` | `false`면 사용량 제한·캐시 없이 동작. Redis가 죽어 있어도 요청은 처리됨(제한·캐시만 건너뜀) |
+| `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_PER_DAY` | | `60` / `5000` | 고객별 한도. IP 단위 제한은 Nginx |
 
 가짜 LLM 서버: `FAKE_LLM_FIRST_TOKEN_DELAY`(300ms), `FAKE_LLM_CHUNK_DELAY`(50ms), `FAKE_LLM_CHUNKS`(20), `FAKE_LLM_TOKENS_PER_CHUNK`(5), `FAKE_LLM_STALL_DURATION`(60s).
 프롬프트에 `#fail500`, `#fail429`, `#slow`(첫 토큰 30초), `#stall`(조각 2개 후 멈춤), `#nousage`를 넣으면 장애를 재현합니다.

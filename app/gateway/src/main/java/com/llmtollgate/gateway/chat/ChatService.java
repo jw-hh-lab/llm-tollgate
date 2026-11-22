@@ -18,6 +18,8 @@ import com.llmtollgate.gateway.llm.LlmClient;
 import com.llmtollgate.gateway.llm.LlmException;
 import com.llmtollgate.gateway.llm.LlmRequest;
 import com.llmtollgate.gateway.llm.LlmResult;
+import com.llmtollgate.gateway.redis.RateLimiter;
+import com.llmtollgate.gateway.redis.ResponseCache;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -40,16 +42,25 @@ public class ChatService {
     private final LlmCallLogRepository callLogRepository;
     private final GatewayProperties.Llm config;
     private final MeterRegistry meters;
+    private final RateLimiter rateLimiter;
+    private final ResponseCache cache;
 
     public ChatService(List<LlmClient> clients, CreditService creditService, Pricing pricing,
                        LlmCallLogRepository callLogRepository, GatewayProperties properties,
-                       MeterRegistry meters) {
+                       MeterRegistry meters, RateLimiter rateLimiter, ResponseCache cache) {
         this.clients = clients;
         this.creditService = creditService;
         this.pricing = pricing;
         this.callLogRepository = callLogRepository;
         this.config = properties.llm();
         this.meters = meters;
+        this.rateLimiter = rateLimiter;
+        this.cache = cache;
+    }
+
+    /** 사용량 제한을 통과하고 모델·최대 토큰을 정한 상태 (아직 예약 전) */
+    record Plan(long customerId, String requestId, String model, LlmRequest llmRequest, LlmClient client,
+                long startNanos) {
     }
 
     /** 예약까지 끝낸 호출 준비물 */
@@ -67,7 +78,12 @@ public class ChatService {
 
     /** 한 번에 받기 */
     public ChatCompletionResponse complete(long customerId, String requestId, ChatCompletionRequest request) {
-        Prepared p = prepare(customerId, requestId, request);
+        Plan plan = plan(customerId, requestId, request);
+        var hit = cached(plan);
+        if (hit.isPresent()) {
+            return cacheHit(plan, hit.get());
+        }
+        Prepared p = reserve(plan);
         StringBuilder content = new StringBuilder();
         LlmResult result;
         try {
@@ -82,26 +98,55 @@ public class ChatService {
             throw e;
         }
         Settled s = settleSuccess(p, result);
-        // (7~8주차) 캐시 저장
+        remember(p, content.toString(), result);
         return new ChatCompletionResponse(requestId, content.toString(), gatewayInfo(p, result, s));
     }
 
     // ---- 스트리밍과 함께 쓰는 단계들 ----
 
-    /** 모델·최대 토큰을 정하고 최대 비용을 예약한다. 잔액이 모자라면 402 */
-    Prepared prepare(long customerId, String requestId, ChatCompletionRequest request) {
-        // (7~8주차) 사용량 제한, 캐시 조회
+    /** 흐름도 2단계(사용량 제한) 후 모델·최대 토큰을 정한다. 한도를 넘으면 429 */
+    Plan plan(long customerId, String requestId, ChatCompletionRequest request) {
+        rateLimiter.check(customerId);
         String model = resolveModel(request.model());
         int maxTokens = resolveMaxTokens(request.maxTokens());
         LlmRequest llmRequest = new LlmRequest(model,
                 request.messages().stream().map(m -> new LlmRequest.Message(m.role(), m.content())).toList(),
                 maxTokens);
-        LlmClient client = clientFor(model);
         MDC.put("model", model);
+        return new Plan(customerId, requestId, model, llmRequest, clientFor(model), System.nanoTime());
+    }
 
-        long reserved = pricing.maxCost(model, llmRequest.totalChars(), maxTokens);
-        creditService.reserve(customerId, requestId, reserved);
-        return new Prepared(customerId, requestId, model, llmRequest, client, reserved, System.nanoTime());
+    /** 흐름도 4단계: 캐시 조회 */
+    java.util.Optional<ResponseCache.CachedAnswer> cached(Plan plan) {
+        return cache.get(plan.customerId(), plan.llmRequest());
+    }
+
+    /** 캐시 적중: LLM을 부르지 않고 차감도 하지 않는다. 적중률을 보기 위해 호출 기록은 남긴다 */
+    ChatCompletionResponse cacheHit(Plan plan, ResponseCache.CachedAnswer answer) {
+        long latencyMs = Duration.ofNanos(System.nanoTime() - plan.startNanos()).toMillis();
+        callLogRepository.insert(new LlmCallLogRepository.CallLog(plan.requestId(), plan.customerId(), plan.model(),
+                "CACHE_HIT", null, answer.inputTokens(), answer.outputTokens(), false, 0, 0, 0L, latencyMs));
+        long remaining = creditService.balance(plan.customerId());
+        return new ChatCompletionResponse(plan.requestId(), answer.content(),
+                new ChatCompletionResponse.Gateway(plan.model(), false,
+                        new ChatCompletionResponse.Tokens(answer.inputTokens(), answer.outputTokens()),
+                        0, remaining, true, answer.finishReason()));
+    }
+
+    /** 흐름도 5단계: 최대 비용을 예약한다. 잔액이 모자라면 402 */
+    Prepared reserve(Plan plan) {
+        long reserved = pricing.maxCost(plan.model(), plan.llmRequest().totalChars(),
+                plan.llmRequest().maxOutputTokens());
+        creditService.reserve(plan.customerId(), plan.requestId(), reserved);
+        return new Prepared(plan.customerId(), plan.requestId(), plan.model(), plan.llmRequest(), plan.client(),
+                reserved, plan.startNanos());
+    }
+
+    /** 정상 종료된 답을 캐시에 넣는다 (정산까지 끝난 답만) */
+    void remember(Prepared p, String content, LlmResult result) {
+        cache.put(p.customerId, p.llmRequest,
+                new ResponseCache.CachedAnswer(content, result.inputTokens(), result.outputTokens(),
+                        result.finishReason()));
     }
 
     record Settled(long charged, long remaining) {

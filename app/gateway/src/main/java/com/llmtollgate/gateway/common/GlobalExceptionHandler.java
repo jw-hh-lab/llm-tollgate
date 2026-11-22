@@ -17,7 +17,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(GatewayException.class)
     public ResponseEntity<ErrorResponse> handleGateway(GatewayException e) {
-        return ResponseEntity.status(e.status()).body(ErrorResponse.of(e.code(), e.getMessage(), requestId()));
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(e.status());
+        if (e instanceof com.llmtollgate.gateway.redis.RateLimiter.RateLimitedException limited) {
+            builder.header("Retry-After", String.valueOf(limited.retryAfterSeconds()));
+        }
+        return builder.body(ErrorResponse.of(e.code(), e.getMessage(), requestId()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
