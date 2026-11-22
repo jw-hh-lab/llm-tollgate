@@ -2,6 +2,7 @@ package com.llmtollgate.gateway.chat;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,8 +25,8 @@ import io.micrometer.core.instrument.Timer;
 /**
  * 흐름도 5~7단계: 크레딧 예약 → LLM 호출 → 정산.
  *
- * <p>2~3주차 범위라 사용량 제한·멱등성·캐시·모델 전환은 아직 없다.
- * 각 단계가 들어갈 자리는 주석으로 표시해 두었다.
+ * <p>한 번에 받기({@link #complete})와 스트리밍({@link StreamingChatService})이 같은 예약·정산 규칙을 쓰도록
+ * 준비({@link #prepare})와 마무리({@link #settleSuccess}, {@link #refundFailure}, {@link #settlePartial})를 나눠 두었다.
  */
 @Service
 public class ChatService {
@@ -51,15 +52,45 @@ public class ChatService {
         this.meters = meters;
     }
 
-    public ChatCompletionResponse complete(long customerId, String requestId, ChatCompletionRequest request) {
-        if (Boolean.TRUE.equals(request.stream())) {
-            throw new GatewayException(HttpStatus.NOT_IMPLEMENTED, "stream_not_supported_yet",
-                    "스트리밍 응답은 아직 지원하지 않습니다. stream을 false로 보내 주세요.");
-        }
-        // (7~8주차) 사용량 제한
-        // (4~5주차) 멱등성 확인
-        // (7~8주차) 캐시 조회
+    /** 예약까지 끝낸 호출 준비물 */
+    record Prepared(long customerId, String requestId, String model, LlmRequest llmRequest, LlmClient client,
+                    long reserved, long startNanos) {
 
+        long elapsedMs() {
+            return Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
+        }
+
+        LlmResult stream(Consumer<String> onText) {
+            return client.stream(llmRequest, onText);
+        }
+    }
+
+    /** 한 번에 받기 */
+    public ChatCompletionResponse complete(long customerId, String requestId, ChatCompletionRequest request) {
+        Prepared p = prepare(customerId, requestId, request);
+        StringBuilder content = new StringBuilder();
+        LlmResult result;
+        try {
+            result = p.stream(content::append);
+        } catch (LlmException e) {
+            // 고객이 아무것도 받지 못했으므로 예약액을 전부 돌려준다
+            refundFailure(p, e);
+            // (7~8주차) e.reason().retryable()이면 예비 모델(Nova Micro)로 한 번 전환
+            throw unavailable();
+        } catch (RuntimeException e) {
+            creditService.refund(customerId, requestId, p.reserved);
+            throw e;
+        }
+        Settled s = settleSuccess(p, result);
+        // (7~8주차) 캐시 저장
+        return new ChatCompletionResponse(requestId, content.toString(), gatewayInfo(p, result, s));
+    }
+
+    // ---- 스트리밍과 함께 쓰는 단계들 ----
+
+    /** 모델·최대 토큰을 정하고 최대 비용을 예약한다. 잔액이 모자라면 402 */
+    Prepared prepare(long customerId, String requestId, ChatCompletionRequest request) {
+        // (7~8주차) 사용량 제한, 캐시 조회
         String model = resolveModel(request.model());
         int maxTokens = resolveMaxTokens(request.maxTokens());
         LlmRequest llmRequest = new LlmRequest(model,
@@ -70,36 +101,72 @@ public class ChatService {
 
         long reserved = pricing.maxCost(model, llmRequest.totalChars(), maxTokens);
         creditService.reserve(customerId, requestId, reserved);
+        return new Prepared(customerId, requestId, model, llmRequest, client, reserved, System.nanoTime());
+    }
 
-        long start = System.nanoTime();
-        StringBuilder content = new StringBuilder();
-        LlmResult result;
-        try {
-            result = client.stream(llmRequest, content::append);
-        } catch (LlmException e) {
-            // 한 번에 받기에서는 고객이 아무것도 받지 못했으므로 예약액을 전부 돌려준다
-            creditService.refund(customerId, requestId, reserved);
-            long latencyMs = elapsedMs(start);
-            recordFailure(customerId, requestId, model, reserved, e, latencyMs);
-            // (7~8주차) e.reason().retryable()이면 예비 모델(Nova Micro)로 한 번 전환
-            throw new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "all_models_unavailable",
-                    "LLM 호출에 실패했습니다. 잠시 후 다시 시도해 주세요. 차감된 크레딧은 없습니다.");
-        } catch (RuntimeException e) {
-            creditService.refund(customerId, requestId, reserved);
-            throw e;
-        }
+    record Settled(long charged, long remaining) {
+    }
 
-        long latencyMs = elapsedMs(start);
-        long cost = pricing.cost(model, result.inputTokens(), result.outputTokens());
-        long charged = Math.min(cost, reserved);
-        long remaining = creditService.settle(customerId, requestId, reserved, cost);
-        recordSuccess(customerId, requestId, reserved, charged, result, latencyMs);
-        // (7~8주차) 캐시 저장
+    /** 정상 종료: 실제 사용량으로 정산 */
+    Settled settleSuccess(Prepared p, LlmResult result) {
+        long latencyMs = p.elapsedMs();
+        long cost = pricing.cost(p.model, result.inputTokens(), result.outputTokens());
+        long charged = Math.min(cost, p.reserved);
+        long remaining = creditService.settle(p.customerId, p.requestId, p.reserved, cost);
+        callLogRepository.insert(new LlmCallLogRepository.CallLog(p.requestId, p.customerId, p.model, "SUCCESS",
+                null, result.inputTokens(), result.outputTokens(), result.usageEstimated(), p.reserved, charged,
+                result.firstTokenMs(), latencyMs));
+        Timer.builder("tollgate.llm.latency").tag("model", p.model).tag("outcome", "success")
+                .register(meters).record(Duration.ofMillis(latencyMs));
+        Timer.builder("tollgate.llm.first_token").tag("model", p.model)
+                .register(meters).record(Duration.ofMillis(result.firstTokenMs()));
+        meters.counter("tollgate.credits.charged", "model", p.model).increment(charged);
+        log.info("LLM 호출 성공 input={} output={} charged={} firstTokenMs={} latencyMs={}",
+                result.inputTokens(), result.outputTokens(), charged, result.firstTokenMs(), latencyMs);
+        return new Settled(charged, remaining);
+    }
 
-        return new ChatCompletionResponse(requestId, content.toString(),
-                new ChatCompletionResponse.Gateway(model, false,
-                        new ChatCompletionResponse.Tokens(result.inputTokens(), result.outputTokens()),
-                        charged, remaining, false, result.finishReason()));
+    /** LLM 또는 우리 쪽 실패: 전액 환불 */
+    Settled refundFailure(Prepared p, LlmException e) {
+        long latencyMs = p.elapsedMs();
+        long remaining = creditService.refund(p.customerId, p.requestId, p.reserved);
+        callLogRepository.insert(new LlmCallLogRepository.CallLog(p.requestId, p.customerId, p.model, "FAILED",
+                e.reason().code(), null, null, false, p.reserved, 0, null, latencyMs));
+        Timer.builder("tollgate.llm.latency").tag("model", p.model).tag("outcome", "failure")
+                .register(meters).record(Duration.ofMillis(latencyMs));
+        meters.counter("tollgate.llm.failures", "model", p.model, "reason", e.reason().code()).increment();
+        log.warn("LLM 호출 실패 reason={} receivedChars={} latencyMs={}", e.reason(), e.receivedChars(), latencyMs);
+        return new Settled(0, remaining);
+    }
+
+    /**
+     * 고객이 스트림 도중 연결을 끊음: 이미 보낸 만큼만 받는다 (API 명세·차감 규칙 v1).
+     * 사용량 정보가 오기 전에 끊겼으므로 입력은 예약 때 쓴 글자 수, 출력은 보낸 글자 수를 토큰 수로 넉넉하게 추정한다.
+     */
+    Settled settlePartial(Prepared p, long sentChars, long firstTokenMs) {
+        long latencyMs = p.elapsedMs();
+        long inputTokens = p.llmRequest.totalChars();
+        long cost = pricing.cost(p.model, inputTokens, sentChars);
+        long charged = Math.min(cost, p.reserved);
+        long remaining = creditService.settle(p.customerId, p.requestId, p.reserved, cost);
+        callLogRepository.insert(new LlmCallLogRepository.CallLog(p.requestId, p.customerId, p.model,
+                "CLIENT_CANCELLED", "client_disconnected", inputTokens, sentChars, true, p.reserved, charged,
+                firstTokenMs, latencyMs));
+        meters.counter("tollgate.stream.client_cancelled", "model", p.model).increment();
+        meters.counter("tollgate.credits.charged", "model", p.model).increment(charged);
+        log.info("고객이 스트림을 끊음 sentChars={} charged={} latencyMs={}", sentChars, charged, latencyMs);
+        return new Settled(charged, remaining);
+    }
+
+    static ChatCompletionResponse.Gateway gatewayInfo(Prepared p, LlmResult result, Settled s) {
+        return new ChatCompletionResponse.Gateway(p.model, false,
+                new ChatCompletionResponse.Tokens(result.inputTokens(), result.outputTokens()),
+                s.charged, s.remaining, false, result.finishReason());
+    }
+
+    static GatewayException unavailable() {
+        return new GatewayException(HttpStatus.SERVICE_UNAVAILABLE, "all_models_unavailable",
+                "LLM 호출에 실패했습니다. 잠시 후 다시 시도해 주세요. 차감된 크레딧은 없습니다.");
     }
 
     private String resolveModel(String requested) {
@@ -124,33 +191,5 @@ public class ChatService {
 
     private LlmClient clientFor(String model) {
         return clients.stream().filter(c -> c.supports(model)).findFirst().orElseThrow();
-    }
-
-    private void recordSuccess(long customerId, String requestId, long reserved, long charged, LlmResult result,
-                               long latencyMs) {
-        callLogRepository.insert(new LlmCallLogRepository.CallLog(requestId, customerId, result.model(), "SUCCESS",
-                null, result.inputTokens(), result.outputTokens(), result.usageEstimated(), reserved, charged,
-                result.firstTokenMs(), latencyMs));
-        Timer.builder("tollgate.llm.latency").tag("model", result.model()).tag("outcome", "success")
-                .register(meters).record(Duration.ofMillis(latencyMs));
-        Timer.builder("tollgate.llm.first_token").tag("model", result.model())
-                .register(meters).record(Duration.ofMillis(result.firstTokenMs()));
-        meters.counter("tollgate.credits.charged", "model", result.model()).increment(charged);
-        log.info("LLM 호출 성공 input={} output={} charged={} firstTokenMs={} latencyMs={}",
-                result.inputTokens(), result.outputTokens(), charged, result.firstTokenMs(), latencyMs);
-    }
-
-    private void recordFailure(long customerId, String requestId, String model, long reserved, LlmException e,
-                               long latencyMs) {
-        callLogRepository.insert(new LlmCallLogRepository.CallLog(requestId, customerId, model, "FAILED",
-                e.reason().code(), null, null, false, reserved, 0, null, latencyMs));
-        Timer.builder("tollgate.llm.latency").tag("model", model).tag("outcome", "failure")
-                .register(meters).record(Duration.ofMillis(latencyMs));
-        meters.counter("tollgate.llm.failures", "model", model, "reason", e.reason().code()).increment();
-        log.warn("LLM 호출 실패 reason={} receivedChars={} latencyMs={}", e.reason(), e.receivedChars(), latencyMs);
-    }
-
-    private static long elapsedMs(long startNanos) {
-        return Duration.ofNanos(System.nanoTime() - startNanos).toMillis();
     }
 }
