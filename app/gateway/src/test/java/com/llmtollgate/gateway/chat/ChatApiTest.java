@@ -3,6 +3,7 @@ package com.llmtollgate.gateway.chat;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -153,6 +154,70 @@ class ChatApiTest {
                         .content("{\"messages\":[{\"role\":\"robot\",\"content\":\"hi\"}]}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("invalid_request"));
+    }
+
+    // ---- 멱등성 (Idempotency-Key) ----
+
+    @Test
+    void 같은_키로_다시_보내면_저장된_응답을_돌려주고_한_번만_차감한다() throws Exception {
+        Customer c = createCustomer(100_000);
+
+        String first = mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "order-1").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(ChatController.REPLAYED_HEADER))
+                .andReturn().getResponse().getContentAsString();
+        String second = mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "order-1").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isOk())
+                .andExpect(header().string(ChatController.REPLAYED_HEADER, "true"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(mapper.readTree(second)).isEqualTo(mapper.readTree(first)); // id까지 같은 응답
+        assertThat(GEMINI.calls()).isEqualTo(1);
+        long charged = mapper.readTree(first).at("/gateway/credits_charged").asLong();
+        mvc.perform(get("/v1/credits").header("Authorization", "Bearer " + c.apiKey))
+                .andExpect(jsonPath("$.balance").value(100_000 - charged));
+    }
+
+    @Test
+    void 같은_키로_다른_내용을_보내면_422() throws Exception {
+        Customer c = createCustomer(100_000);
+        mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "order-2").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "order-2").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"messages\":[{\"role\":\"user\",\"content\":\"다른 질문\"}]}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error.code").value("idempotency_key_reused"));
+    }
+
+    @Test
+    void 실패한_요청은_같은_키로_다시_시도할_수_있다() throws Exception {
+        Customer c = createCustomer(100_000);
+        GEMINI.behave(StubGeminiServer.status(500));
+        mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "order-3").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isServiceUnavailable());
+
+        GEMINI.behave(StubGeminiServer::ok);
+        mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "order-3").contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(ChatController.REPLAYED_HEADER));
+        assertThat(GEMINI.calls()).isEqualTo(2);
+    }
+
+    @Test
+    void 키가_너무_길면_400() throws Exception {
+        Customer c = createCustomer(100_000);
+        mvc.perform(post("/v1/chat/completions").header("Authorization", "Bearer " + c.apiKey)
+                        .header("Idempotency-Key", "k".repeat(129)).contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("invalid_request"));
+        assertThat(GEMINI.calls()).isZero();
     }
 
     private Customer createCustomer(long credits) throws Exception {
