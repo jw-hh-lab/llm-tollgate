@@ -1,3 +1,6 @@
+// Docker Engine 29(최소 API 1.44)와 붙으려면 Testcontainers 1.21.4 이상이 필요하다
+ext["testcontainers.version"] = "1.21.4"
+
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
@@ -14,4 +17,16 @@ dependencies {
     testRuntimeOnly 'com.h2database:h2'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+
+    // 실제 MySQL(8.4, k8s 매니페스트와 같은 버전)로 동시성을 검증하는 테스트용. Docker가 없으면 그 테스트만 건너뛴다
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:mysql'
+}
+
+// 동시성 측정 결과(build/reports/concurrency/*.md)를 테스트 로그에서도 보이게
+tasks.named('test') {
+    testLogging {
+        showStandardStreams = providers.gradleProperty('showTestOutput').isPresent()
+    }
 }
