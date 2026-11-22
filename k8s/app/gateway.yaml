@@ -37,6 +37,8 @@ spec:
                   name: mysql-secret
                   key: app-password
             - name: REDIS_HOST
+              value: redis
+            - name: REDIS_PORT
               value: "6379"
             - name: GEMINI_BASE_URL                     # 평소엔 가짜 LLM(비용 0). 진짜 Gemini는 이 줄을 지우면 됨
               value: http://fake-llm:9090
