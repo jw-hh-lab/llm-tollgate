@@ -1,0 +1,87 @@
+# 게이트웨이(형호 Spring Boot 앱). 고객 요청을 받아 크레딧을 확인하고 LLM을 호출한다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: tollgate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      terminationGracePeriodSeconds: 60   # 끄라는 신호를 받아도 진행 중인 스트리밍이 끝날 시간을 줌 (앱은 graceful shutdown)
+      enableServiceLinks: false
+      containers:
+        - name: gateway
+          image: ghcr.io/jw-hh-lab/llm-tollgate-gateway:0.1.0
+          ports:
+            - name: http
+              containerPort: 8080       # 고객 API
+            - name: management
+              containerPort: 8081       # 헬스체크·지표 (밖에 공개 안 함)
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: prod
+            - name: DB_URL
+              value: jdbc:mysql://mysql:3306/tollgate   # 같은 namespace라 서비스 이름 mysql만으로 찾아감
+            - name: DB_USERNAME
+              value: tollgate
+            - name: DB_PASSWORD                         # MySQL 만들 때 쓴 Secret을 그대로 재사용
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: app-password
+            - name: REDIS_HOST
+              value: "6379"
+            - name: GEMINI_BASE_URL                     # 평소엔 가짜 LLM(비용 0). 진짜 Gemini는 이 줄을 지우면 됨
+              value: http://fake-llm:9090
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secret
+                  key: gemini-api-key
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secret
+                  key: admin-token
+          startupProbe:          # Spring Boot는 켜지는 데 시간이 걸림. 최대 5분까지 기다려 줌
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:         # 앱이 멈췄으면 재시작
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+            periodSeconds: 10
+          readinessProbe:        # DB가 안 되면 트래픽만 잠시 뺌 (LLM·Redis는 검사 안 함)
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi        # 힙은 이 값의 75% (Dockerfile MaxRAMPercentage=75)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: tollgate
+spec:
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

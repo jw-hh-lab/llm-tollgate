@@ -1,0 +1,47 @@
+# 가짜 LLM 서버. Gemini와 같은 형식으로 답해서, 진짜 키 없이 비용 0으로 시험할 수 있다.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-llm
+  namespace: tollgate
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-llm
+  template:
+    metadata:
+      labels:
+        app: fake-llm
+    spec:
+      containers:
+        - name: fake-llm
+          image: ghcr.io/jw-hh-lab/llm-tollgate-fake-llm:0.1.0
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              memory: 384Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-llm
+  namespace: tollgate
+spec:
+  selector:
+    app: fake-llm
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http

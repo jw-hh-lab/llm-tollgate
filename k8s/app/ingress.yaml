@@ -1,0 +1,23 @@
+# 밖(CloudFront → EC2:80)에서 들어온 요청 중 /v1 만 게이트웨이로 보낸다.
+# /admin 은 여기 적지 않아서 밖에서는 404. 관리자 작업은 kubectl port-forward로만 한다.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway
+  namespace: tollgate
+  annotations:
+    nginx.org/proxy-buffering: "False"     # 스트리밍 조각을 모으지 말고 바로 전달
+    nginx.org/proxy-read-timeout: "60s"    # 11/9 결정: Nginx 60초
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: ec2-54-116-57-123.ap-northeast-2.compute.amazonaws.com
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway
+                port:
+                  number: 8080
