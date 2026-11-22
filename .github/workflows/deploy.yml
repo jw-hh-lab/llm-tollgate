@@ -98,3 +98,24 @@ jobs:
             --query '[StandardOutputContent, StandardErrorContent]' --output text
           echo "결과: $STATUS"
           [ "$STATUS" = "Success" ]
+
+  notify:
+    needs: [build, deploy]
+    if: always()                       # 성공이든 실패든 결과를 Discord로
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord 알림
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}
+          BUILD: ${{ needs.build.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$BUILD" = "success" ] && [ "$DEPLOY" = "success" ]; then
+            MSG="✅ 배포 끝: ${SHA:0:7} (서버가 꺼져 있었다면 이미지만 올라감)"
+          else
+            MSG="🔴 배포 실패: ${SHA:0:7} (build=$BUILD, deploy=$DEPLOY)"
+          fi
+          jq -n --arg c "$MSG · [실행 기록]($RUN_URL)" '{content: $c}' \
+            | curl -sf -H 'Content-Type: application/json' -d @- "$WEBHOOK"
