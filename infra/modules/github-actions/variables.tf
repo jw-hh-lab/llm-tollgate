@@ -12,3 +12,9 @@ variable "github_repo" {
   type        = string
   default     = "jw-hh-lab/llm-tollgate"
 }
+
+variable "github_repo_with_ids" {
+  description = "GitHub가 증명서(sub)에 넣는 ID 포함 형식. 이름을 바꿔도 ID는 안 바뀜"
+  type        = string
+  default     = "jw-hh-lab@353662139/llm-tollgate@1449159549"
+}

@@ -23,7 +23,11 @@ resource "aws_iam_role" "github_actions" {
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repo}:ref:refs/heads/main"
+                    # GitHub가 보내는 sub 형식이 두 가지라 둘 다 허용 (둘 다 main 브랜치만)
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.github_repo}:ref:refs/heads/main",          # 예전 형식: 조직/저장소
+            "repo:${var.github_repo_with_ids}:ref:refs/heads/main", # 새 형식: 조직@ID/저장소@ID (CloudTrail에서 확인)
+          ]
         }
       }
     }]
