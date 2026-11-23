@@ -16,7 +16,8 @@ spec:
     spec:
       containers:
         - name: fake-llm
-          image: ghcr.io/jw-hh-lab/llm-tollgate-fake-llm:0.1.0
+          image: ghcr.io/jw-hh-lab/llm-tollgate-fake-llm:main   # Actions가 main merge 때마다 올리는 최신 태그. 배포 때는 커밋 ID 태그로 바뀜
+          imagePullPolicy: Always   # 같은 :main 이름이라도 매번 새로 받기 (apply를 다시 해도 옛 이미지로 안 돌아감)
           ports:
             - name: http
               containerPort: 9090
