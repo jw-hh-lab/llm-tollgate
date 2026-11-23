@@ -13,3 +13,7 @@ output "public_dns" {
 output "api_url" {
   value = "https://${module.cdn.domain_name}"
 }
+
+output "github_actions_role_arn" {
+  value = module.github_actions.role_arn
+}
