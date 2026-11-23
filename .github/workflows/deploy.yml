@@ -44,13 +44,17 @@ jobs:
           context: app
           build-args: MODULE=${{ matrix.module }}
           push: true
-          tags: ${{ env.IMAGE_PREFIX }}-${{ matrix.module }}:${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.module }}:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.module }}:main
           cache-from: type=gha,scope=${{ matrix.module }}       # Gradle 라이브러리 층을 저장해 두고 다음 빌드에 재사용
           cache-to: type=gha,mode=max,scope=${{ matrix.module }}
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      deployed: ${{ steps.server.outputs.state == 'running' }}   # 서버가 꺼져 있어 건너뛰었는지 알림에 전달
     env:
       INSTANCE_ID: ${{ vars.INSTANCE_ID }}
     steps:
@@ -109,11 +113,14 @@ jobs:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}
           BUILD: ${{ needs.build.result }}
           DEPLOY: ${{ needs.deploy.result }}
+          DEPLOYED: ${{ needs.deploy.outputs.deployed }}
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ "$BUILD" = "success" ] && [ "$DEPLOY" = "success" ]; then
-            MSG="✅ 배포 끝: ${SHA:0:7} (서버가 꺼져 있었다면 이미지만 올라감)"
+          if [ "$BUILD" = "success" ] && [ "$DEPLOY" = "success" ] && [ "$DEPLOYED" = "true" ]; then
+            MSG="✅ 배포 끝: ${SHA:0:7} 서버에 반영됨"
+          elif [ "$BUILD" = "success" ] && [ "$DEPLOY" = "success" ]; then
+            MSG="⏸️ 이미지만 올림: ${SHA:0:7} (서버 꺼져 있음 → 켠 뒤 deploy의 Run workflow로 반영)"
           else
             MSG="🔴 배포 실패: ${SHA:0:7} (build=$BUILD, deploy=$DEPLOY)"
           fi
