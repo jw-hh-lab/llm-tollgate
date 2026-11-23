@@ -1,0 +1,128 @@
+# main에 앱 코드가 merge되면: 이미지 2개를 만들어 GHCR에 올리고 → 서버(k3s)의 이미지를 새 것으로 교체
+# AWS 키는 저장하지 않음. OIDC로 1시간짜리 임시 키를 빌려 씀 (infra/modules/github-actions)
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}          # Actions 탭에서 "Run workflow" 버튼으로 직접 실행 (서버를 켠 뒤 다시 배포할 때)
+
+permissions:
+  contents: read                 # 코드 읽기
+  packages: write                # GHCR에 이미지 올리기
+  id-token: write                # OIDC 증명서 받기 (AWS 역할 빌리기)
+
+concurrency: deploy              # 배포가 두 개 겹치지 않게 하나씩
+
+env:
+  IMAGE_PREFIX: ghcr.io/jw-hh-lab/llm-tollgate
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [gateway, fake-llm]   # 같은 Dockerfile로 두 이미지를 동시에 빌드
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: GHCR 로그인 (GitHub이 자동으로 주는 토큰 사용)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 이미지 빌드·push (태그 = 커밋 ID, 어떤 코드인지 바로 추적 가능)
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          build-args: MODULE=${{ matrix.module }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.module }}:${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.module }}:main
+          cache-from: type=gha,scope=${{ matrix.module }}       # Gradle 라이브러리 층을 저장해 두고 다음 빌드에 재사용
+          cache-to: type=gha,mode=max,scope=${{ matrix.module }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      deployed: ${{ steps.server.outputs.state == 'running' }}   # 서버가 꺼져 있어 건너뛰었는지 알림에 전달
+    env:
+      INSTANCE_ID: ${{ vars.INSTANCE_ID }}
+    steps:
+      - name: AWS 역할 빌리기 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: 서버가 켜져 있는지 확인
+        id: server
+        run: |
+          STATE=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].State.Name' --output text)
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          if [ "$STATE" != "running" ]; then
+            echo "::warning::서버가 꺼져 있어($STATE) 이미지만 올리고 배포는 건너뜀. 서버를 켠 뒤 Run workflow로 다시 실행"
+          fi
+
+      - name: 서버에서 이미지 교체 (SSM Run Command)
+        if: steps.server.outputs.state == 'running'
+        run: |
+          SHA=${{ github.sha }}
+          # 서버에서 실행할 명령. k3s에 들어 있는 kubectl을 root로 실행
+          PARAMS=$(jq -n --arg p "$IMAGE_PREFIX" --arg s "$SHA" '{commands: [
+            "set -e",
+            "k3s kubectl -n tollgate set image deployment/fake-llm fake-llm=\($p)-fake-llm:\($s)",
+            "k3s kubectl -n tollgate set image deployment/gateway gateway=\($p)-gateway:\($s)",
+            "k3s kubectl -n tollgate rollout status deployment/fake-llm --timeout=180s",
+            "k3s kubectl -n tollgate rollout status deployment/gateway --timeout=300s"
+          ]}')
+          CMD_ID=$(aws ssm send-command --instance-ids "$INSTANCE_ID" \
+            --document-name AWS-RunShellScript --parameters "$PARAMS" \
+            --comment "deploy $SHA" --query Command.CommandId --output text)
+          echo "SSM 명령 ID: $CMD_ID"
+
+          # 끝날 때까지 5초마다 확인 (최대 7분)
+          for i in $(seq 1 84); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+              --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Pending|InProgress|Delayed) sleep 5 ;; *) break ;; esac
+          done
+
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query '[StandardOutputContent, StandardErrorContent]' --output text
+          echo "결과: $STATUS"
+          [ "$STATUS" = "Success" ]
+
+  notify:
+    needs: [build, deploy]
+    if: always()                       # 성공이든 실패든 결과를 Discord로
+    runs-on: ubuntu-latest
+    steps:
+      - name: Discord 알림
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_DEPLOY }}
+          BUILD: ${{ needs.build.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          DEPLOYED: ${{ needs.deploy.outputs.deployed }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$BUILD" = "success" ] && [ "$DEPLOY" = "success" ] && [ "$DEPLOYED" = "true" ]; then
+            MSG="✅ 배포 끝: ${SHA:0:7} 서버에 반영됨"
+          elif [ "$BUILD" = "success" ] && [ "$DEPLOY" = "success" ]; then
+            MSG="⏸️ 이미지만 올림: ${SHA:0:7} (서버 꺼져 있음 → 켠 뒤 deploy의 Run workflow로 반영)"
+          else
+            MSG="🔴 배포 실패: ${SHA:0:7} (build=$BUILD, deploy=$DEPLOY)"
+          fi
+          jq -n --arg c "$MSG · [실행 기록]($RUN_URL)" '{content: $c}' \
+            | curl -sf -H 'Content-Type: application/json' -d @- "$WEBHOOK"
