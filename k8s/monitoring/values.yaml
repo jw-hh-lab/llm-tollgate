@@ -1,0 +1,85 @@
+# 차트: prometheus-community/kube-prometheus-stack 93.11.1 (helm install mon ... --version 93.11.1, 2026-11-26)
+# kube-prometheus-stack 설정 (Prometheus + Grafana + Alertmanager + 노드/쿠버네티스 지표를 한 번에)
+# 서버가 1대(8GB)라 가볍게: 보관 7일 또는 2GB, 30초마다 수집, 안 쓰는 부품은 끔
+fullnameOverride: mon
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 30s            # 지표를 30초마다 긁어 감 (기본 15초 → 절반으로 줄여 메모리 절약)
+    retention: 7d                  # 7일 지나면 지움
+    retentionSize: 2GB             # 또는 2GB 넘으면 오래된 것부터 지움
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits: { memory: 1Gi }
+    # 기본값은 "이 helm 설치가 만든 감시 대상만" 봄 → 우리가 따로 만든 PodMonitor·규칙도 보게 함
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    storageSpec:                   # 서버를 껐다 켜도 지표가 남게 디스크(EBS)에 저장
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path   # k3s 기본 저장소 (노드 디스크 폴더)
+          accessModes: [ReadWriteOnce]
+          resources: { requests: { storage: 3Gi } }
+
+grafana:
+  admin:                           # 관리자 비밀번호는 values에 안 적고 Secret에서 읽음 (SSM에서 만듦)
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:                     # 만든 대시보드가 재시작해도 남게
+    enabled: true
+    storageClassName: local-path
+    size: 1Gi
+  resources:                       # 처음엔 256Mi였는데 첫 시작(DB 만들기·플러그인 로드) 때 OOMKilled 2번 → 512Mi로 올림 (2026-11-26)
+    requests: { cpu: 50m, memory: 192Mi }
+    limits: { memory: 512Mi }
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits: { memory: 128Mi }
+    secrets: [alertmanager-discord]   # Discord 웹후크 주소 (SSM에서 만든 Secret) → /etc/alertmanager/secrets/alertmanager-discord/ 에 파일로 들어감
+  config:                            # 알림을 어디로 보낼지
+    global: { resolve_timeout: 5m }
+    route:
+      receiver: discord
+      group_by: [alertname, namespace]  # 같은 종류 알림은 묶어서 한 번에
+      group_wait: 30s                   # 첫 알림은 30초 모았다가
+      group_interval: 5m
+      repeat_interval: 4h               # 안 고쳐지면 4시간마다 다시 알림
+      routes:
+        - receiver: "null"              # Watchdog = "알림 시스템이 살아 있다"는 항상 켜진 알림 → Discord로 안 보냄
+          matchers: ['alertname =~ "Watchdog|InfoInhibitor"']
+        - receiver: "null"              # 정보성(info)은 안 보냄. critical·warning만
+          matchers: ['severity = "info"']
+    receivers:
+      - name: "null"
+      - name: discord
+        discord_configs:
+          - webhook_url_file: /etc/alertmanager/secrets/alertmanager-discord/webhook-url
+            send_resolved: true         # 고쳐지면 "해결됨"도 보냄
+            title: '{{ if eq .Status "firing" }}🚨 장애{{ else }}✅ 해결{{ end }}: {{ .CommonLabels.alertname }} ({{ .CommonLabels.severity }})'
+            # 해결 메시지에 "5% 초과" 같은 마지막 경고 문구가 그대로 나와 헷갈려서 → 해결일 땐 "정상으로 돌아옴"만 (2026-11-26)
+            message: '{{ range .Alerts }}• {{ if eq .Status "firing" }}{{ .Annotations.summary }}{{ else }}{{ .Labels.alertname }} 정상으로 돌아옴{{ end }}{{ "\n" }}{{ end }}'
+    inhibit_rules:
+      - source_matchers: ['severity = "critical"']   # 같은 알림이 critical로 떠 있으면 warning은 생략
+        target_matchers: ['severity = "warning"']
+        equal: [alertname, namespace]
+
+# k3s는 컨트롤 플레인이 프로세스 하나로 합쳐져 있어서 이 부품들은 따로 긁을 수 없음 → 끔 (안 끄면 "대상 다운" 경고만 계속 뜸)
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeProxy: { enabled: false }
+kubeEtcd: { enabled: false }
+
+prometheus-node-exporter:          # 서버(EC2) 자체의 CPU·메모리·디스크
+  resources:
+    requests: { cpu: 10m, memory: 24Mi }
+    limits: { memory: 64Mi }
+
+kube-state-metrics:                # Pod 재시작 횟수, Deployment 상태 같은 쿠버네티스 상태
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { memory: 128Mi }

@@ -1,0 +1,15 @@
+# Prometheus에게 "게이트웨이 Pod의 management 포트(8081) /actuator/prometheus를 긁어 가"라고 알려 주는 설정
+# Service를 새로 만들지 않고 Pod를 바로 찾음 (8081은 밖에 공개하지 않으니 Service도 필요 없음)
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: gateway
+  namespace: tollgate
+spec:
+  selector:
+    matchLabels:
+      app: gateway
+  podMetricsEndpoints:
+    - port: management             # gateway.yaml의 containerPort 이름
+      path: /actuator/prometheus
+      interval: 30s

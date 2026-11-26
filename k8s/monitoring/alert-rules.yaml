@@ -1,0 +1,58 @@
+# 우리 서비스 전용 알림 규칙 (Prometheus가 30초마다 검사 → 조건이 for 시간 동안 계속되면 Alertmanager로 보냄 → Discord 알림-장애)
+# 쿠버네티스·노드 기본 규칙(Pod 계속 재시작, 디스크 부족 등)은 차트에 이미 들어 있음. 여기는 게이트웨이 비즈니스 기준만
+# 서버를 끄면 Prometheus도 같이 꺼지므로 "꺼져 있는 동안" 헛알림은 안 옴
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tollgate-gateway
+  namespace: monitoring
+spec:
+  groups:
+    - name: tollgate-gateway
+      rules:
+        - alert: GatewayDown
+          # Prometheus가 게이트웨이 지표를 못 긁음 = 게이트웨이가 죽었거나 응답 못 함
+          expr: absent(up{job="tollgate/gateway"} == 1)
+          for: 3m                  # 서버 켤 때 앱이 뜨는 1~2분은 봐줌
+          labels: { severity: critical }
+          annotations:
+            summary: "게이트웨이가 3분째 응답 없음 (Pod·Readiness 확인)"
+
+        - alert: GatewayHigh5xxRate
+          # 고객 API(/v1) 요청 중 서버 에러(5xx) 비율
+          expr: |
+            sum(rate(http_server_requests_seconds_count{namespace="tollgate",uri=~"/v1.*",status=~"5.."}[5m]))
+              / sum(rate(http_server_requests_seconds_count{namespace="tollgate",uri=~"/v1.*"}[5m])) > 0.05
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "게이트웨이 5xx 비율 {{ $value | humanizePercentage }} (5분째 5% 초과)"
+
+        - alert: LlmCallsFailing
+          # 모델별 LLM 호출 중 성공이 아닌 것이 분당 3회 넘음 → 공급자 장애·키 문제 의심, 예비 모델 전환 확인
+          expr: sum by (model) (rate(tollgate_llm_latency_seconds_count{outcome!="success"}[5m])) * 60 > 3
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $labels.model }} 호출 실패 분당 {{ $value | humanize }}회"
+
+        - alert: LlmFirstTokenSlow
+          # 첫 글자까지 평균 5초 초과 (앱 타임아웃 10초의 절반) → 곧 타임아웃·환불이 늘어날 신호
+          expr: |
+            sum by (model) (rate(tollgate_llm_first_token_seconds_sum[5m]))
+              / sum by (model) (rate(tollgate_llm_first_token_seconds_count[5m])) > 5
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $labels.model }} 첫 글자까지 평균 {{ $value | humanize }}초"
+
+        - alert: RedisSilentlyMissing
+          # 요청은 들어오는데 Redis 명령이 0 = 캐시·사용량 제한이 조용히 꺼짐 (11/23 REDIS_HOST 사고 재발 방지)
+          # 앱은 Redis가 죽어도 에러 없이 돌아가도록 만들어져 있어서, 이 규칙이 없으면 아무도 모름
+          expr: |
+            sum(rate(http_server_requests_seconds_count{namespace="tollgate",uri=~"/v1.*"}[10m])) > 0
+              unless sum(rate(lettuce_command_completion_seconds_count{namespace="tollgate"}[10m])) > 0
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "요청은 있는데 Redis 명령이 0 (캐시·사용량 제한 꺼짐 의심)"
