@@ -1,0 +1,27 @@
+# 백업 감시: 백업이 실패했거나, 마지막 성공이 너무 오래됐으면 Discord 알림-장애로
+# 지표는 kube-state-metrics(모니터링 스택에 이미 있음)가 Job·CronJob 상태를 숫자로 바꿔 준 것
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tollgate-backup
+  namespace: monitoring
+spec:
+  groups:
+    - name: tollgate-backup
+      rules:
+        # 백업 Job이 실패로 끝남 (재시도까지 다 실패). 확인 후 실패한 Job을 지우면 알림도 풀림
+        - alert: MysqlBackupFailed
+          expr: max by (job_name) (kube_job_status_failed{namespace="tollgate", job_name=~"mysql-backup.*"}) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "MySQL 백업 실패: {{ $labels.job_name }} (kubectl logs -n tollgate job/{{ $labels.job_name }} -c dump / -c upload)"
+        # 마지막 성공 백업이 36시간보다 오래됨. 서버를 켜면 놓친 백업이 따라잡으므로 30분 기다린 뒤에 알림
+        - alert: MysqlBackupTooOld
+          expr: time() - max(kube_cronjob_status_last_successful_time{namespace="tollgate", cronjob="mysql-backup"}) > 36 * 3600
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "마지막 MySQL 백업 성공이 {{ $value | humanizeDuration }} 전"

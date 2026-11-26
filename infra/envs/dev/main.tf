@@ -20,6 +20,12 @@ module "scheduler" {
   instance_id = module.compute.instance_id
 }
 
+module "backup" {
+  source        = "../../modules/backup"
+  name          = local.name
+  ec2_role_name = "${local.name}-ec2-role"
+}
+
 module "cdn" {
   source        = "../../modules/cdn"
   name          = local.name

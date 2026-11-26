@@ -1,0 +1,65 @@
+# MySQL 복구 Job (평소엔 안 돌고, 사고 때 손으로 실행하는 런북용)
+# 실행: kubectl apply -f k8s/data/mysql-restore-job.yaml   (다시 돌릴 땐 먼저 kubectl delete job mysql-restore -n tollgate)
+# 기본은 S3의 가장 최근 백업. 특정 파일로 복구하려면 FILE 값에 파일 이름을 넣기
+# 덤프에 DROP TABLE IF EXISTS / CREATE DATABASE IF NOT EXISTS가 들어 있어서, DB가 통째로 없어졌어도 망가진 채 남아 있어도 덮어씀
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mysql-restore
+  namespace: tollgate
+spec:
+  backoffLimit: 0 # 복구는 자동 재시도하지 않음 (사람이 로그 보고 판단)
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app: mysql-restore
+    spec:
+      restartPolicy: Never
+      enableServiceLinks: false
+      volumes:
+        - name: dump
+          emptyDir: {}
+      initContainers:
+        - name: download
+          image: amazon/aws-cli:2.17.0
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              if [ -z "$FILE" ]; then
+                FILE=$(aws s3 ls "s3://$BUCKET/mysql/" | sort | tail -1 | awk '{print $4}')
+              fi
+              echo "복구할 백업: $FILE"
+              aws s3 cp "s3://$BUCKET/mysql/$FILE" /dump/restore.sql
+          env:
+            - name: BUCKET
+              value: llm-tollgate-backup-c3b2ea
+            - name: AWS_DEFAULT_REGION
+              value: ap-northeast-2
+            - name: FILE
+              value: "" # 비우면 가장 최근 백업
+          volumeMounts:
+            - name: dump
+              mountPath: /dump
+      containers:
+        - name: restore
+          image: mysql:8.4
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              # 받은 파일이 끝까지 온전한지 먼저 확인
+              tail -1 /dump/restore.sql | grep -q "Dump completed"
+              mysql -h mysql -u root < /dump/restore.sql
+              echo "복구 완료. 행 수:"
+              mysql -h mysql -u root -t -e "SELECT (SELECT COUNT(*) FROM tollgate.customer) AS customer, (SELECT COUNT(*) FROM tollgate.credit_ledger) AS ledger, (SELECT COUNT(*) FROM tollgate.llm_call_log) AS calls, (SELECT SUM(balance) FROM tollgate.credit_account) AS balance_sum;"
+          env:
+            - name: MYSQL_PWD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: root-password
+          volumeMounts:
+            - name: dump
+              mountPath: /dump
