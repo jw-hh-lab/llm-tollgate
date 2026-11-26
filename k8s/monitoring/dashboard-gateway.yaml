@@ -1,0 +1,401 @@
+# Grafana 대시보드를 코드로 관리 (Dashboard as Code)
+# grafana_dashboard: "1" 라벨이 붙은 ConfigMap을 Grafana 옆의 sidecar가 찾아서 자동으로 불러옴
+# 화면에서 고친 건 재시작하면 사라짐 → 고치고 싶으면 이 파일을 고쳐서 apply
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-tollgate-gateway
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  tollgate-gateway.json: |
+    {
+     "uid": "tollgate-gateway",
+     "title": "Tollgate / Gateway",
+     "tags": [
+      "tollgate"
+     ],
+     "timezone": "browser",
+     "schemaVersion": 39,
+     "refresh": "30s",
+     "time": {
+      "from": "now-1h",
+      "to": "now"
+     },
+     "panels": [
+      {
+       "id": 1,
+       "type": "timeseries",
+       "title": "분당 요청 수 (/v1, 상태 코드별)",
+       "description": "고객 API 호출 수. 4xx는 키·잔액 문제, 5xx는 우리 쪽 문제",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "reqpm"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (status) (rate(http_server_requests_seconds_count{uri=~\"/v1.*\"}[$__rate_interval])) * 60",
+         "legendFormat": "{{status}}"
+        }
+       ]
+      },
+      {
+       "id": 2,
+       "type": "stat",
+       "title": "캐시 적중률",
+       "description": "같은 질문을 Redis에서 바로 돌려준 비율. 높을수록 LLM 비용 절약",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percentunit"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(tollgate_cache_requests_total{result=\"hit\"}[$__rate_interval])) / sum(rate(tollgate_cache_requests_total[$__rate_interval]))",
+         "legendFormat": "hit ratio"
+        }
+       ],
+       "options": {
+        "reduceOptions": {
+         "calcs": [
+          "lastNotNull"
+         ]
+        },
+        "colorMode": "value"
+       }
+      },
+      {
+       "id": 3,
+       "type": "stat",
+       "title": "5xx 비율",
+       "description": "게이트웨이가 낸 서버 에러 비율. 알림 기준 후보",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "percentunit"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(http_server_requests_seconds_count{uri=~\"/v1.*\",status=~\"5..\"}[$__rate_interval])) / sum(rate(http_server_requests_seconds_count{uri=~\"/v1.*\"}[$__rate_interval]))",
+         "legendFormat": "5xx"
+        }
+       ],
+       "options": {
+        "reduceOptions": {
+         "calcs": [
+          "lastNotNull"
+         ]
+        },
+        "colorMode": "value"
+       }
+      },
+      {
+       "id": 4,
+       "type": "timeseries",
+       "title": "시간당 차감 크레딧 (모델별)",
+       "description": "모델별로 고객에게서 차감한 크레딧. 비용 대시보드와 비교용",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "short"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (model) (increase(tollgate_credits_charged_total[1h]))",
+         "legendFormat": "{{model}}"
+        }
+       ]
+      },
+      {
+       "id": 5,
+       "type": "timeseries",
+       "title": "LLM 평균 응답 시간 (모델별)",
+       "description": "LLM에 묻고 답을 다 받기까지. p95는 형호가 히스토그램을 켜면 추가",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "s"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (model) (rate(tollgate_llm_latency_seconds_sum[$__rate_interval])) / sum by (model) (rate(tollgate_llm_latency_seconds_count[$__rate_interval]))",
+         "legendFormat": "{{model}}"
+        }
+       ]
+      },
+      {
+       "id": 6,
+       "type": "timeseries",
+       "title": "첫 글자까지 평균 시간 (모델별)",
+       "description": "스트리밍 체감 속도. 앱 타임아웃 10초에 가까워지면 위험",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "s"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (model) (rate(tollgate_llm_first_token_seconds_sum[$__rate_interval])) / sum by (model) (rate(tollgate_llm_first_token_seconds_count[$__rate_interval]))",
+         "legendFormat": "{{model}}"
+        }
+       ]
+      },
+      {
+       "id": 7,
+       "type": "timeseries",
+       "title": "LLM 호출 결과 (모델·성공/실패별, 분당)",
+       "description": "outcome이 success가 아닌 줄이 늘면 LLM 공급자 장애 의심 → 예비 모델 전환 확인",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "short"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum by (model, outcome) (rate(tollgate_llm_latency_seconds_count[$__rate_interval])) * 60",
+         "legendFormat": "{{model}} {{outcome}}"
+        }
+       ]
+      },
+      {
+       "id": 8,
+       "type": "timeseries",
+       "title": "DB 커넥션 (사용 중 / 대기)",
+       "description": "pending이 0보다 크면 커넥션 풀이 모자람 (부하 테스트 때 핵심)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "short"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(hikaricp_connections_active{namespace=\"tollgate\"})",
+         "legendFormat": "active"
+        },
+        {
+         "refId": "B",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(hikaricp_connections_pending{namespace=\"tollgate\"})",
+         "legendFormat": "pending"
+        },
+        {
+         "refId": "C",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "max(hikaricp_connections_max{namespace=\"tollgate\"})",
+         "legendFormat": "max"
+        }
+       ]
+      },
+      {
+       "id": 9,
+       "type": "timeseries",
+       "title": "Redis 명령 평균 응답 시간",
+       "description": "캐시·사용량 제한이 쓰는 Redis. 이 줄이 사라지면 Redis가 조용히 빠진 것 (11/23 REDIS_HOST 사고)",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 8,
+        "y": 16,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "s"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(rate(lettuce_command_completion_seconds_sum{namespace=\"tollgate\"}[$__rate_interval])) / sum(rate(lettuce_command_completion_seconds_count{namespace=\"tollgate\"}[$__rate_interval]))",
+         "legendFormat": "avg"
+        }
+       ]
+      },
+      {
+       "id": 10,
+       "type": "timeseries",
+       "title": "게이트웨이 JVM 힙 메모리",
+       "description": "Pod 메모리 한도(1Gi)와 같이 봄",
+       "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+       },
+       "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 8
+       },
+       "fieldConfig": {
+        "defaults": {
+         "unit": "bytes"
+        },
+        "overrides": []
+       },
+       "targets": [
+        {
+         "refId": "A",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(jvm_memory_used_bytes{namespace=\"tollgate\",area=\"heap\"})",
+         "legendFormat": "used"
+        },
+        {
+         "refId": "B",
+         "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+         },
+         "expr": "sum(jvm_memory_max_bytes{namespace=\"tollgate\",area=\"heap\"})",
+         "legendFormat": "max"
+        }
+       ]
+      }
+     ]
+    }
