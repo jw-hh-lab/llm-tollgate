@@ -1,0 +1,31 @@
+# 비용 대시보드: LLM 원가(크레딧 × $0.0001) + 서버 켜진 시간 기반 EC2 예상 요금
+# AWS 실제 청구 금액은 Cost Explorer API(호출당 $0.01)를 피하려고 여기서 안 그림 → Budgets 알림(infra/modules/cost-alert)으로 봄
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-tollgate-cost
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  tollgate-cost.json: |
+    {
+     "uid": "tollgate-cost",
+     "title": "Tollgate / Cost",
+     "tags": ["tollgate"],
+     "timezone": "browser",
+     "schemaVersion": 39,
+     "refresh": "1m",
+     "time": {"from": "now-24h", "to": "now"},
+     "description": "Prometheus 보관 기간이 7일이라 그보다 긴 기간은 안 나옴. 월 합계는 AWS Billing·Budgets 알림으로 봄",
+     "templating": {"list": [{"name": "ec2_hourly_usd", "label": "EC2 시간당 단가($)", "type": "textbox", "query": "0.11771", "current": {"text": "0.11771", "value": "0.11771"}, "description": "m7i-flex.large 서울 리전 Linux 온디맨드 단가 (2026-11-26 확인)"}]},
+     "panels": [
+      {"id": 1, "type": "stat", "title": "LLM 원가 (선택 기간)", "description": "크레딧 합계 × $0.0001. 형호 단가표가 원가 그대로(마진 0)라서 크레딧 = LLM 원가. Gemini 무료 등급이라 실제 청구는 $0, '유료였다면' 금액", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5}, "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 4}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none", "textMode": "auto"}, "targets": [{"refId": "A", "expr": "sum(increase(tollgate_credits_charged_total[$__range])) * 0.0001", "instant": true}]},
+      {"id": 2, "type": "stat", "title": "서버 켜진 시간 (선택 기간)", "description": "node-exporter가 살아 있던 시간. 서버를 쓸 때만 켜서 이 숫자가 곧 EC2 요금의 근거", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 6, "y": 0, "w": 6, "h": 5}, "fieldConfig": {"defaults": {"unit": "h", "decimals": 1}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none", "textMode": "auto"}, "targets": [{"refId": "A", "expr": "sum_over_time(max(up{job=~\".*node-exporter.*\"})[$__range:30s]) * 30 / 3600", "instant": true}]},
+      {"id": 3, "type": "stat", "title": "EC2 예상 요금 (선택 기간)", "description": "켜진 시간 × 시간당 단가(위 변수 ec2_hourly_usd). EBS·퍼블릭 IP 등 고정비는 빠짐. 정확한 금액은 Billing에서", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 12, "y": 0, "w": 6, "h": 5}, "fieldConfig": {"defaults": {"unit": "currencyUSD", "decimals": 3}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none", "textMode": "auto"}, "targets": [{"refId": "A", "expr": "(sum_over_time(max(up{job=~\".*node-exporter.*\"})[$__range:30s]) * 30 / 3600) * $ec2_hourly_usd", "instant": true}]},
+      {"id": 4, "type": "stat", "title": "캐시로 아낀 LLM 호출", "description": "캐시 hit 수. 이만큼 LLM을 안 불러서 원가가 0", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 18, "y": 0, "w": 6, "h": 5}, "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}, "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none", "textMode": "auto"}, "targets": [{"refId": "A", "expr": "sum(increase(tollgate_cache_requests_total{result=\"hit\"}[$__range]))", "instant": true}]},
+      {"id": 5, "type": "timeseries", "title": "모델별 LLM 원가 (시간당, $)", "description": "모델별로 한 시간 동안 쓴 원가. 비싼 모델로 넘어가면(예비 모델 전환) 여기서 바로 보임", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 0, "y": 5, "w": 12, "h": 8}, "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []}, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"refId": "A", "expr": "sum by (model) (increase(tollgate_credits_charged_total[1h])) * 0.0001", "legendFormat": "{{model}}"}]},
+      {"id": 6, "type": "timeseries", "title": "모델별 호출 수 (시간당)", "description": "원가가 튀었을 때 호출이 늘어서인지, 비싼 모델로 바뀌어서인지 나눠 보기", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 12, "y": 5, "w": 12, "h": 8}, "fieldConfig": {"defaults": {"unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 60, "stacking": {"mode": "normal"}}}, "overrides": []}, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"refId": "A", "expr": "sum by (model) (increase(tollgate_llm_latency_seconds_count[1h]))", "legendFormat": "{{model}}"}]},
+      {"id": 7, "type": "timeseries", "title": "호출 1건당 평균 원가 ($)", "description": "원가 ÷ 호출 수. 답변이 길어지면(출력 토큰↑) 올라감", "datasource": {"type": "prometheus", "uid": "prometheus"}, "gridPos": {"x": 0, "y": 13, "w": 24, "h": 8}, "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"drawStyle": "line", "fillOpacity": 10, "stacking": {"mode": "none"}}}, "overrides": []}, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}, "targets": [{"refId": "A", "expr": "sum by (model) (increase(tollgate_credits_charged_total[1h])) * 0.0001 / sum by (model) (increase(tollgate_llm_latency_seconds_count{outcome=\"success\"}[1h]))", "legendFormat": "{{model}}"}]}
+     ]
+    }

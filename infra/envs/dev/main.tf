@@ -31,3 +31,7 @@ module "github_actions" {
   name        = local.name
   instance_id = module.compute.instance_id
 }
+module "cost_alert" {
+  source = "../../modules/cost-alert"
+  name   = local.name
+}
